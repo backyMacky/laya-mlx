@@ -5,15 +5,20 @@ decision model is never constructed. The MLX ``embed_fn_from_agent`` is exercise
 a stub encoder and against a real tiny checkpoint.
 """
 
-import mlx.core as mx
-import mlx.nn as nn
 import numpy as np
 import pytest
 
-import laya_mlx
-from laya_mlx import Agent
-from laya_mlx.common import render_options
-from laya_mlx.shortlist import embed_fn_from_agent, predict_shortlist, shortlist_choice
+mx = pytest.importorskip("mlx.core")
+nn = pytest.importorskip("mlx.nn")
+
+import laya_mlx  # noqa: E402
+from laya_mlx import Agent  # noqa: E402
+from laya_mlx.common import render_options  # noqa: E402
+from laya_mlx.shortlist import (  # noqa: E402
+    embed_fn_from_agent,
+    predict_shortlist,
+    shortlist_choice,
+)
 
 
 class TableEmbed:

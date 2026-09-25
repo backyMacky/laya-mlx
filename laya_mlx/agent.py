@@ -5,9 +5,16 @@ import math
 import warnings
 from pathlib import Path, PurePosixPath
 
-import mlx.core as mx
 import numpy as np
 from huggingface_hub import snapshot_download
+
+try:
+    import mlx.core as mx
+
+    HAVE_MLX = True
+except ImportError:
+    mx = None
+    HAVE_MLX = False
 
 from .common import (
     QTYPES,
@@ -19,11 +26,16 @@ from .common import (
     render_options,
     temp_bucket,
 )
-from .model import DecisionModel, EncoderConfig, sanitize_weights
+from .config import EncoderConfig, sanitize_weights
+from .numpy_model import NumpyDecisionModel, load_safetensors
 from .prepared import PrefixCache
 from .tokenizer import Tokenizer
 
-DTYPES = {"float32": mx.float32, "float16": mx.float16, "bfloat16": mx.bfloat16}
+if HAVE_MLX:
+    DTYPES = {"float32": mx.float32, "float16": mx.float16, "bfloat16": mx.bfloat16}
+else:
+    # The NumPy backend always computes in float32; float16 storage is upcast at load.
+    DTYPES = {"float32": np.float32, "float16": np.float32, "bfloat16": np.float32}
 
 
 def resolve_model(model_id_or_path, *, token=None, subfolder=None, revision=None):
@@ -104,9 +116,17 @@ class Agent:
             raise ValueError("MLX device must be 'gpu', 'metal', or 'cpu'")
         if not isinstance(batch_size, int) or isinstance(batch_size, bool) or batch_size < 1:
             raise ValueError("batch_size must be a positive integer")
-        self.device = (
-            mx.default_device() if device is None else (mx.cpu if device == "cpu" else mx.gpu)
-        )
+        if HAVE_MLX:
+            self.device = (
+                mx.default_device() if device is None else (mx.cpu if device == "cpu" else mx.gpu)
+            )
+        else:
+            if device in ("gpu", "metal"):
+                raise RuntimeError(
+                    "device='gpu' requires the MLX backend (Apple silicon); this installation "
+                    "runs the NumPy CPU backend. Omit `device`."
+                )
+            self.device = None
         self.dtype = DTYPES[dtype]
         self.batch_size = batch_size
         if pad_to_multiple is not None and (
@@ -163,15 +183,31 @@ class Agent:
                 stacklevel=2,
             )
         self.tok = Tokenizer(self.model_dir / "tokenizer")
-        with mx.stream(self.device):
-            self.model = DecisionModel(enc_cfg, self.cfg)
-            weights = sanitize_weights(mx.load(str(self.model_dir / "model.safetensors")))
-            weights = {k: v.astype(self.dtype) for k, v in weights.items()}
-            self.model.load_weights(list(weights.items()), strict=True)
-            self.model.eval()
-            mx.eval(self.model.parameters())
+        if HAVE_MLX:
+            from .model import DecisionModel
+
+            with mx.stream(self.device):
+                self.model = DecisionModel(enc_cfg, self.cfg)
+                weights = sanitize_weights(mx.load(str(self.model_dir / "model.safetensors")))
+                weights = {k: v.astype(self.dtype) for k, v in weights.items()}
+                self.model.load_weights(list(weights.items()), strict=True)
+                self.model.eval()
+                mx.eval(self.model.parameters())
+        else:
+            if compile:
+                warnings.warn(
+                    "laya-mlx: compile=True requires the MLX backend; running eager on the "
+                    "NumPy CPU backend.",
+                    RuntimeWarning,
+                    stacklevel=2,
+                )
+            self.model = NumpyDecisionModel(enc_cfg, self.cfg)
+            weights = sanitize_weights(
+                load_safetensors(self.model_dir / "model.safetensors")
+            )
+            self.model.load_weights(weights, dtype=self.dtype)
         # Frozen inference instance: changing weights or module structure requires a new Agent.
-        self._inference = mx.compile(self.model) if compile else self.model
+        self._inference = mx.compile(self.model) if HAVE_MLX and compile else self.model
 
     @staticmethod
     def _to_internal(qdef):
@@ -223,12 +259,14 @@ class Agent:
         return items, internal
 
     def forward(self, batch):
-        """Run one prepared batch and return evaluated MLX logits on this agent's device."""
-        with mx.stream(self.device):
-            tensors = {k: mx.array(v) for k, v in batch.items()}
-            result = self._inference(**tensors)
-            mx.eval(result)
-        return result
+        """Run one prepared batch and return evaluated logits on this agent's device."""
+        if HAVE_MLX:
+            with mx.stream(self.device):
+                tensors = {k: mx.array(v) for k, v in batch.items()}
+                result = self._inference(**tensors)
+                mx.eval(result)
+            return result
+        return self._inference(**batch)
 
     def system_one(self, state, questions):
         items, internal = self.prepare(state, questions)

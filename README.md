@@ -33,7 +33,7 @@ result = agent.predict(
 print(result["answers"]["department"])
 ```
 
-Apple Silicon, Python 3.11+, macOS 14+. First load downloads the checkpoint; later inference is fully local. The measured environment is macOS 27.2, Python 3.12.13 and MLX 0.32.2. That MLX release supplies macOS 14, 15 and 26 wheels; the local installer selected the 26 wheel. Older supported macOS versions were not tested on this machine.
+Apple Silicon (macOS 14+, Python 3.11+) runs the native MLX backend. Other platforms — Windows and Linux x64/ARM — run a pure-NumPy float32 CPU engine (`laya_mlx/numpy_model.py`) that mirrors the MLX architecture op for op and reads the same checkpoints; nothing else changes, including prompt construction, temperatures, and the public API. On a desktop CPU, expect roughly 100 ms for a short decision and a few hundred ms for long inputs, versus the ~13 ms M3 Max figures above. The NumPy engine reproduces the published MLX FP16 predictions exactly on the AG News benchmark sample (256/256 agreement, same accuracy; see [benchmarks/results/accuracy.json](benchmarks/results/accuracy.json)). First load downloads the checkpoint; later inference is fully local. The measured environment is macOS 27.2, Python 3.12.13 and MLX 0.32.2. That MLX release supplies macOS 14, 15 and 26 wheels; the local installer selected the 26 wheel. Older supported macOS versions were not tested on this machine.
 
 Run the terminal demo:
 

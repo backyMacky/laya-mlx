@@ -19,8 +19,15 @@ report; this module does not measure them.
 import json
 from typing import Any, Callable, Dict, List, Optional, Sequence
 
-import mlx.core as mx
 import numpy as np
+
+try:
+    import mlx.core as mx
+
+    HAVE_MLX = True
+except ImportError:
+    mx = None
+    HAVE_MLX = False
 
 from .common import render_options, serialize_state
 
@@ -130,7 +137,8 @@ def embed_fn_from_agent(
         raise ValueError("batch_size must be a positive integer, got %r" % (batch_size,))
 
     tok = agent.tok
-    encoder = agent.model.encoder
+    model = agent.model
+    encoder = model.encoder
     device = agent.device
 
     def embed_fn(texts: Sequence[str]) -> np.ndarray:
@@ -150,13 +158,20 @@ def embed_fn_from_agent(
             for i, ids in enumerate(encoded):
                 input_ids[i, : len(ids)] = ids
                 attention_mask[i, : len(ids)] = True
-            with mx.stream(device):
-                hidden_states = encoder(mx.array(input_ids), mx.array(attention_mask))
-                mask = mx.array(attention_mask.astype(np.float32))[:, :, None]
-                pooled = (hidden_states.astype(mx.float32) * mask).sum(axis=1) / mx.maximum(
+            if HAVE_MLX:
+                with mx.stream(device):
+                    hidden_states = encoder(mx.array(input_ids), mx.array(attention_mask))
+                    mask = mx.array(attention_mask.astype(np.float32))[:, :, None]
+                    pooled = (hidden_states.astype(mx.float32) * mask).sum(axis=1) / mx.maximum(
+                        mask.sum(axis=1), 1.0
+                    )
+                    mx.eval(pooled)
+            else:
+                hidden_states = encoder(input_ids, attention_mask, model.weights)
+                mask = attention_mask.astype(np.float32)[:, :, None]
+                pooled = (hidden_states.astype(np.float32) * mask).sum(axis=1) / np.maximum(
                     mask.sum(axis=1), 1.0
                 )
-                mx.eval(pooled)
             parts.append(np.asarray(pooled, dtype=np.float32))
         return np.concatenate(parts, axis=0)
 
